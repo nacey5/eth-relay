@@ -3,6 +3,8 @@ package eth_relay
 import (
 	"errors"
 	"eth-relay/model"
+	"fmt"
+	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rpc"
 	"math/big"
@@ -119,4 +121,58 @@ func (r *ETHRPCRequester) GetERC20Balances(paramArr []ERC20BalanceRpcReq) ([]str
 		finalRet = append(finalRet, ten.String())
 	}
 	return finalRet, err
+}
+
+func (r *ETHRPCRequester) GetLatestBlockNumber() (*big.Int, error) {
+	methodName := "eth_blockNumber"
+	number := ""
+	err := r.client.GetRpc().Call(&number, methodName)
+	if err != nil {
+		return nil, fmt.Errorf("get the latest BlockNumber failed: %s", err.Error())
+	}
+	ten, _ := new(big.Int).SetString(number[2:], 16)
+	return ten, nil
+}
+
+func (r *ETHRPCRequester) GetBlockInfoByNumber(blockNumber *big.Int) (*model.FullBlock, error) {
+	number := fmt.Sprintf("%#x", blockNumber)
+	methodName := "eth_getBlockByNumber"
+	fullBlock := model.FullBlock{}
+	err := r.client.GetRpc().Call(&fullBlock, methodName, number, true)
+	if err != nil {
+		return nil, fmt.Errorf("get block info failed! %s", err.Error())
+	}
+	if fullBlock.Number == "" {
+		return nil, fmt.Errorf("block info is empty %s", blockNumber.String())
+	}
+	return &fullBlock, nil
+}
+
+func (r *ETHRPCRequester) GetBlockInfoByHash(blockHash string) (*model.FullBlock, error) {
+	methodName := "eth_getBlockByHash"
+	fullBlock := model.FullBlock{}
+	err := r.client.GetRpc().Call(&fullBlock, methodName, blockHash, true)
+	if err != nil {
+		return nil, fmt.Errorf("get block info failed! %s", err.Error())
+	}
+	if fullBlock.Number == "" {
+		return nil, fmt.Errorf("block info is empty %s", blockHash)
+	}
+	return &fullBlock, nil
+}
+
+func (r *ETHRPCRequester) CreateETHWallet(password string) (string, error) {
+	if password == "" {
+		return "", errors.New("pwd cant empty")
+	}
+	if len(password) < 6 {
+		return "", errors.New("pwd's len must more than 6 words")
+	}
+	keydir := "./keystore"
+	ks := keystore.NewKeyStore(keydir, keystore.StandardScryptN, keystore.StandardScryptP)
+	wallet, err := ks.NewAccount(password)
+	if err != nil {
+		return "0x", err
+	}
+	return wallet.Address.String(), nil
 }

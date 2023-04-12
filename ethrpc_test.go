@@ -2,6 +2,7 @@ package eth_relay
 
 import (
 	"encoding/json"
+	"eth-relay/tool"
 	"fmt"
 	"testing"
 )
@@ -87,4 +88,93 @@ func Test_GetERCBalances(t *testing.T) {
 		return
 	}
 	fmt.Println(balances)
+}
+
+func TestETHRPCRequester_GetLatestBlockNumber(t *testing.T) {
+	nodeUrl := "https://eth-mainnet.g.alchemy.com/v2/5Qr_VuMZh2dAdvsqacDUIW8ew9LuuLfC"
+	number, err := NewETHRPCRequester(nodeUrl).GetLatestBlockNumber()
+	if err != nil {
+		//query failed
+		fmt.Println("get the latest BlockNumber failed,info:", err.Error())
+		return
+	}
+	fmt.Println("decimal:", number.String())
+}
+
+func TestGetFullBlockInfo(t *testing.T) {
+	nodeUrl := "https://eth-mainnet.g.alchemy.com/v2/5Qr_VuMZh2dAdvsqacDUIW8ew9LuuLfC"
+	requester := NewETHRPCRequester(nodeUrl)
+	number, _ := requester.GetLatestBlockNumber()
+	fmt.Println("block Number is :", number)
+	fullBlock, err := requester.GetBlockInfoByNumber(number)
+	if err != nil {
+		fmt.Println("get block info failed,info: ", err.Error())
+	}
+	jsonl, _ := json.Marshal(fullBlock)
+	fmt.Println("get the info by blockNumber:\n", string(jsonl))
+}
+
+func TestGetFullBlockInfoByHash(t *testing.T) {
+	nodeUrl := "https://eth-mainnet.g.alchemy.com/v2/5Qr_VuMZh2dAdvsqacDUIW8ew9LuuLfC"
+	requester := NewETHRPCRequester(nodeUrl)
+	blockHash := "0x06286a17cdb1b6a70d79ec6a622a2615708a127ab9ff638c6ab38099bf135acc"
+	fmt.Println("blockHash is :", blockHash)
+	fullBlock, err := requester.GetBlockInfoByHash(blockHash)
+	if err != nil {
+		fmt.Println("get block info failed,info: ", err.Error())
+	}
+	jsonl, _ := json.Marshal(fullBlock)
+	fmt.Println("get the info by blockHash:\n", string(jsonl))
+}
+
+func TestMakeMethodId(t *testing.T) {
+	contractABI := `[ { "constant": true, "inputs": [ { "name": "arg1",
+"type": "uint8" }, { "name":
+"arg2", "type": "uint8" } ], "name": "add", "outputs": [ {
+"name": "", "type":
+"uint8" } ], "payable": false, "stateMutability": "pure",
+"type": "function" } ]
+`
+	methodName := "add"
+	methodId, err := tool.MakeMethodId(methodName, contractABI)
+	if err != nil {
+		fmt.Println("create methodId failed", err.Error())
+		return
+	}
+	fmt.Println("create methodId successful", methodId)
+}
+
+func TestCreateETHWallet(t *testing.T) {
+	nodeUrl := "https://eth-mainnet.g.alchemy.com/v2/5Qr_VuMZh2dAdvsqacDUIW8ew9LuuLfC"
+	address1, err := NewETHRPCRequester(nodeUrl).CreateETHWallet("12345")
+	if err != nil {
+		fmt.Println("first,failed to create wallet", err.Error())
+	} else {
+		fmt.Println("first,success,eth address is:", address1)
+	}
+
+	address2, err := NewETHRPCRequester(nodeUrl).CreateETHWallet("123456aass")
+	if err != nil {
+		fmt.Println("second,failed to create wallet", err.Error())
+	} else {
+		fmt.Println("second,success,eth address is:", address2)
+	}
+}
+
+func TestUnlockETHWallet(t *testing.T) {
+	address := "0x15902acd111a5265e07455fD3B938440A74b465B"
+	keyDir := "./keystore"
+	err1 := tool.UnlockETHWallet(keyDir, address, "189")
+	if err1 != nil {
+		fmt.Println("unlock failed", err1.Error())
+	} else {
+		fmt.Println("unlock successful")
+
+	}
+	err2 := tool.UnlockETHWallet(keyDir, address, "123456aass")
+	if err2 != nil {
+		fmt.Println("unlock failed", err2.Error())
+	} else {
+		fmt.Println("unlock successful")
+	}
 }
