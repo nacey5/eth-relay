@@ -3,19 +3,24 @@ package eth_relay
 import (
 	"errors"
 	"eth-relay/model"
+	"eth-relay/tool"
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"math/big"
 )
 
 type ETHRPCRequester struct {
-	client *ETHRPCClient
+	nonceManager *NonceManager
+	client       *ETHRPCClient
 }
 
 func NewETHRPCRequester(nodeUrl string) *ETHRPCRequester {
 	requester := &ETHRPCRequester{}
+	requester.nonceManager = NewNonceManager()
 	requester.client = NewETHRPCClient(nodeUrl)
 	return requester
 }
@@ -175,4 +180,118 @@ func (r *ETHRPCRequester) CreateETHWallet(password string) (string, error) {
 		return "0x", err
 	}
 	return wallet.Address.String(), nil
+}
+
+func (r *ETHRPCRequester) SendTransaction(address string, transaction *types.Transaction) (string, error) {
+	//signUp the transaction data
+	signTx, err := tool.SignETHTransaction(address, transaction)
+	if err != nil {
+		return "", fmt.Errorf("signUp failed:%s", err.Error())
+	}
+	//rlp Serialization
+	txRlpData, err := rlp.EncodeToBytes(signTx)
+	if err != nil {
+		return "", fmt.Errorf(" rlp Serialization failed:%s", err.Error())
+	}
+	// use the eth interface
+	txHash := ""
+	methodName := "eth_sendRawTransaction"
+	err = r.client.GetRpc().Call(&txHash, methodName, common.Bytes2Hex(txRlpData))
+	if err != nil {
+		return "", fmt.Errorf("send transaction failed:%s", err.Error())
+	}
+	oldNonce := r.nonceManager.GetNonce(address)
+	if oldNonce == nil {
+		//get from eth evm,get the most new transaction nonce6 cw....................
+		r.nonceManager.SetNonce(address, new(big.Int).SetUint64(transaction.Nonce()))
+	}
+	return txHash, nil
+}
+
+func (r *ETHRPCRequester) GetNonce(address string) (uint64, error) {
+	methodName := "eth_getTransactionCount"
+	nonce := ""
+	//query the most new,according to the etTransactionCount
+	err := r.client.GetRpc().Call(&nonce, methodName, address, "pending")
+	if err != nil {
+		return 0, fmt.Errorf("send transaction failed:%s", err.Error())
+	}
+	// back to the decimal
+	n, _ := new(big.Int).SetString(nonce[2:], 16)
+	//the transaction hash
+	return n.Uint64(), nil
+}
+
+// SendETHTransaction send the eth
+func (r *ETHRPCRequester) SendETHTransaction(fromStr, toStr, valueStr string, gasLimit, gasPrice uint64) (string, error) {
+	if !common.IsHexAddress(fromStr) || !common.IsHexAddress(toStr) {
+		return "", errors.New("invalid address")
+	}
+	to := common.HexToAddress(toStr)
+	gas := new(big.Int).SetUint64(gasPrice)
+
+	realV := tool.GetRealDecimalValue(valueStr, 18)
+	if realV == "" {
+		return "", errors.New("invalid value")
+	}
+	amount, _ := new(big.Int).SetString(realV, 10)
+	//get the nonce
+	nonce := r.nonceManager.GetNonce(fromStr)
+	if nonce == nil {
+		//nonce is not exist
+		n, err := r.GetNonce(fromStr)
+		if err != nil {
+			return "", fmt.Errorf("get nonce failed %s", err.Error())
+		}
+		nonce = new(big.Int).SetUint64(n)
+		//set the nonce from the fromStr
+		r.nonceManager.SetNonce(fromStr, nonce)
+	}
+	data := []byte("")
+
+	transaction := types.NewTx(&types.LegacyTx{
+		Nonce:    nonce.Uint64(),
+		To:       &to,
+		Value:    amount,
+		Gas:      gasLimit,
+		GasPrice: gas,
+		Data:     data,
+	})
+	return r.SendTransaction(fromStr, transaction)
+}
+
+func (r *ETHRPCRequester) SendERC20Transaction(fromStr, contract, receiver, valueStr string,
+	gasLimit, gasPrice uint64,
+	decimal int) (string, error) {
+	if !common.IsHexAddress(fromStr) ||
+		!common.IsHexAddress(contract) ||
+		!common.IsHexAddress(receiver) {
+		return "", errors.New("invalid address")
+	}
+	//transfer the contract to the type of the address
+	to := common.HexToAddress(contract)
+	gasPrice2 := new(big.Int).SetUint64(gasPrice)
+	amount := new(big.Int).SetInt64(0)
+	nonce := r.nonceManager.GetNonce(fromStr)
+	if nonce == nil {
+		n, err := r.GetNonce(fromStr)
+		if err != nil {
+			return "", fmt.Errorf("get nonce failed %s", err.Error())
+		}
+		nonce = new(big.Int).SetUint64(n)
+		r.nonceManager.SetNonce(fromStr, nonce)
+	}
+
+	data := tool.BuildERC20TransferData(valueStr, receiver, decimal)
+	//transform the data to the byte
+	byteData := common.FromHex(data)
+	transaction := types.NewTx(&types.LegacyTx{
+		Nonce:    nonce.Uint64(),
+		To:       &to,
+		Value:    amount,
+		Gas:      gasLimit,
+		GasPrice: gasPrice2,
+		Data:     byteData,
+	})
+	return r.SendTransaction(fromStr, transaction)
 }
