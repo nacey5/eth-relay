@@ -1,12 +1,15 @@
 package eth_relay
 
 import (
+	"encoding/json"
+	"errors"
 	"eth-relay/dao"
 	"eth-relay/model"
 	"fmt"
 	"math/big"
 	"strings"
 	"sync"
+	"time"
 )
 
 type BlockScanner struct {
@@ -141,4 +144,148 @@ func (scanner *BlockScanner) hexToTen(hex string) *big.Int {
 	}
 	ten, _ := new(big.Int).SetString(hex[2:], 16)
 	return ten
+}
+
+// use the getScannerBlockNumber() must accused the init() ---init()--->getScannerBlockNumber()
+func (scanner *BlockScanner) getScannerBlockNumber() (*big.Int, error) {
+	//use eth request get the most new block number
+	newBlockNumber, err := scanner.ethRequester.GetLatestBlockNumber()
+	if err != nil {
+		return nil, err
+	}
+	latestNumber := newBlockNumber
+	//use the new() init and set the value
+	//if not do this according to that,may affect the block num get after
+	targetNumber := new(big.Int).Set(scanner.lastNumber)
+	//compare the block number
+	// -1 if x<y. 0 if x==y.  +1 if x>y
+	if latestNumber.Cmp(scanner.lastNumber) < 0 {
+		//the most new height must smaller than the set ,then the height of new >= set
+	Next:
+		for {
+			select {
+			case <-time.After(time.Duration(4 * time.Second)): //late for 4s retry
+				number, err := scanner.ethRequester.GetLatestBlockNumber()
+				if err != nil && number.Cmp(scanner.lastNumber) >= 0 {
+					break Next //jump for
+				}
+			}
+		}
+	}
+	return targetNumber, nil // return the height of the block number
+}
+
+// scan the block
+func (scanner *BlockScanner) scan() error {
+	//get the blockNumber you want scan
+	targetNumber, err := scanner.getScannerBlockNumber()
+	if err != nil {
+		return err
+	}
+	//use the func get the blockNumber that can retry
+	fullBlock, err := scanner.retryGetBlockInfoByNumber(targetNumber)
+	if err != nil {
+		return err
+	}
+	//the block plu 1
+	scanner.lastNumber.Add(scanner.lastNumber, new(big.Int).SetInt64(1))
+
+	//you must accused two tables,must use the transactional for the tables
+	tx := scanner.mysql.Db.NewSession() //start affair
+	defer tx.Close()
+
+	//prepare the info for the block,must judge the block info exist or not
+	block := dao.Block{}
+	_, err = tx.Where("block_hash=?", fullBlock.Hash).Get(&block)
+	if err == nil && block.Id == 0 {
+		//not exists
+		block.BlockNumber = scanner.hexToTen(fullBlock.Number).String()
+		block.ParentHash = fullBlock.ParentHash
+		block.CreateTime = scanner.hexToTen(fullBlock.TimeStamp).Int64()
+		block.BlockHash = fullBlock.Hash
+		block.Fork = false
+		if _, err := tx.Insert(&block); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	//check the block has fork or not
+	if scanner.isFork(&block) {
+		data, _ := json.Marshal(fullBlock)
+		scanner.log("fork", string(data))
+		tx.Commit() //though fork,must save the block transactional commit
+		scanner.fork = true
+		return errors.New("fork check") //return error ,let your lay occur
+	}
+
+	// analytic
+	scanner.log(
+		"scan block start==>", "number:",
+		scanner.hexToTen(fullBlock.Number), "hash:", fullBlock.Hash)
+	for index, transaction := range fullBlock.Transactions {
+		//the print operation mock the init operation,and to the every tx,we can get the info for that
+		scanner.log("tx hash==>", transaction.(map[string]interface{})["hash"])
+		//in order to control the print info ,for 5 that is enough
+		if index == 5 {
+			break
+		}
+	}
+	scanner.log("scan block finish \n==========")
+	//save the transaction info
+	for _, transaction := range fullBlock.Transactions {
+		if _, err := tx.InsertOne(&transaction); err != nil {
+			tx.Rollback() //affair rollback
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Start listen the stop event and start an go routine to scan prevent from pending the main thread
+func (scanner *BlockScanner) Start() error {
+	scanner.lock.Lock() //lock
+	//init the data----mainly init the blockNumber inner
+	if err := scanner.init(); err != nil {
+		scanner.lock.Unlock()
+		return err
+	}
+	execute := func() {
+		//scan func,the func for scan the block
+		if err := scanner.scan(); err != nil {
+			scanner.log(err.Error())
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	// start a go routine to for the block
+	go func() {
+		for {
+			select {
+			case <-scanner.stop:
+				scanner.log("finished block scanner!")
+				return
+			default:
+				if !scanner.fork {
+					//inter this branch approve that has not any fork,can execute every circle
+					execute()
+					continue
+				}
+				// if fork=true,that has fork branch,re-init
+				// re-get from database pre successful and not any fork
+				if err := scanner.init(); err != nil {
+					scanner.log(err.Error())
+					return
+				}
+				scanner.fork = false
+			}
+
+		}
+	}()
+
+	return nil
+}
+
+func (scanner *BlockScanner) Stop() {
+	scanner.lock.Unlock()
+	scanner.stop <- true
 }

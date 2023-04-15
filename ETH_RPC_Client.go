@@ -6,8 +6,8 @@ import (
 )
 
 type ETHRPCClient struct {
-	NodeUrl string      //代表节点的url链接
-	client  *rpc.Client //代表RPC客户端句柄
+	NodeUrl string      //the node url
+	client  *rpc.Client //rpc
 }
 
 func NewETHRPCClient(nodeUrl string) *ETHRPCClient {
@@ -19,7 +19,7 @@ func NewETHRPCClient(nodeUrl string) *ETHRPCClient {
 }
 
 func (erc *ETHRPCClient) initRpc() {
-	//使用go-ethereum 库中的RPC库来初始化
+	//use go-ethereum rpc init
 	rpcClient, err := rpc.DialHTTP(erc.NodeUrl)
 	if err != nil {
 		//init failed
